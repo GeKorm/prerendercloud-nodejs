@@ -324,6 +324,45 @@ describe("prerender middleware", function() {
         });
       });
 
+      describe("success", function() {
+        beforeEach(function() {
+          this.req._requestedUrl = `http://example.org/`;
+          this.headersSentToServer = {};
+          var self = this;
+          this.prerenderServer = nock("https://service.prerender.cloud")
+            .get(/.*/)
+            .reply(function(uri) {
+              self.headersSentToServer = this.req.headers;
+              return [200, "body"];
+            });
+        });
+
+        describe("with user-agent", function() {
+          beforeEach(function(done) {
+            this.req.headers["user-agent"] = "twitterbot";
+            this.runIt(done);
+          });
+          it("sends user-agent", function() {
+            expect(this.headersSentToServer).toEqual(
+              jasmine.objectContaining({
+                "user-agent": "prerender-cloud-nodejs-middleware",
+                "x-original-user-agent": "twitterbot"
+              })
+            );
+          });
+        });
+
+        describe("without user-agent", function() {
+          beforeEach(function(done) {
+            delete this.req.headers["user-agent"];
+            this.runIt(done);
+          });
+          it("sends user-agent", function() {
+            itCalledNext()
+          });
+        });
+      });
+
       [
         "/",
         "/index",
@@ -384,7 +423,7 @@ describe("prerender middleware", function() {
               this.requestCount += 1;
               return [200, "body2", { "content-type": "text/html" }];
             });
-          let callCounter = 0;
+          var callCounter = 0;
           const _done = () => {
             callCounter += 1;
             if (callCounter === 2) done();
