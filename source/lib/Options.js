@@ -19,6 +19,19 @@ class MiddlewareCache {
       if (k.startsWith(httpPath) || k.startsWith(httpsPath)) cache.del(k);
     });
   }
+  clearKeys(keys) {
+    if (!keys) throw new Error("must pass the cache keys");
+
+    keys.forEach((key) => {
+      key = key.replace(/^https?/, "");
+      let httpPath = `http${key}`;
+      let httpsPath = `https${key}`;
+
+      this.lruCache.forEach(function(v, k, cache) {
+        if (k === httpPath || k === httpsPath) cache.del(k);
+      });
+    });
+  }
   set(url, res) {
     this.lruCache.set(url, res);
   }
