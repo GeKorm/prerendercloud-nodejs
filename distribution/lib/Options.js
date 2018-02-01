@@ -39,6 +39,7 @@ var MiddlewareCache = function () {
 
       if (!keys) throw new Error("must pass the cache keys");
 
+      console.log(keys);
       if (keys.length > 0) {
         keys.forEach(function (key) {
           console.log(key);
