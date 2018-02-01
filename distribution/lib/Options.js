@@ -39,15 +39,18 @@ var MiddlewareCache = function () {
 
       if (!keys) throw new Error("must pass the cache keys");
 
-      keys.forEach(function (key) {
-        key = key.replace(/^https?/, "");
-        var httpPath = "http" + key;
-        var httpsPath = "https" + key;
+      if (keys.length > 0) {
+        keys.forEach(function (key) {
+          console.log(key);
+          key = key.replace(/^https?/, "");
+          var httpPath = "http" + key;
+          var httpsPath = "https" + key;
 
-        _this.lruCache.forEach(function (v, k, cache) {
-          if (k === httpPath || k === httpsPath) cache.del(k);
+          _this.lruCache.forEach(function (v, k, cache) {
+            if (k === httpPath || k === httpsPath) cache.del(k);
+          });
         });
-      });
+      }
     }
   }, {
     key: "set",
