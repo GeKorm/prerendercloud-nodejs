@@ -22,15 +22,18 @@ class MiddlewareCache {
   clearKeys(keys) {
     if (!keys) throw new Error("must pass the cache keys");
 
-    keys.forEach((key) => {
-      key = key.replace(/^https?/, "");
-      let httpPath = `http${key}`;
-      let httpsPath = `https${key}`;
+    if (keys.length > 0) {
+      keys.forEach((key) => {
+        console.log(key);
+        key = key.replace(/^https?/, "");
+        let httpPath = `http${key}`;
+        let httpsPath = `https${key}`;
 
-      this.lruCache.forEach(function(v, k, cache) {
-        if (k === httpPath || k === httpsPath) cache.del(k);
+        this.lruCache.forEach(function (v, k, cache) {
+          if (k === httpPath || k === httpsPath) cache.del(k);
+        });
       });
-    });
+    }
   }
   set(url, res) {
     this.lruCache.set(url, res);
