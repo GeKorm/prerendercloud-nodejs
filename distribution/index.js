@@ -44,7 +44,7 @@ var vary = require("vary");
 // preserve (and send to client) these headers from service.prerender.cloud which originally came from the origin server
 var headerWhitelist = ["vary", "content-type", "cache-control", "strict-transport-security", "content-security-policy", "public-key-pins", "x-frame-options", "x-xss-protection", "x-content-type-options", "location"];
 
-var botsOnlyList = ["googlebot", "yahoo", "bingbot", "baiduspider", "facebookexternalhit", "twitterbot", "rogerbot", "linkedinbot", "embedly", "quora link preview", "showyoubot", "outbrain", "pinterest/0.", "pinterestbot", "developers.google.com/+/web/snippet", "slackbot", "vkShare", "W3C_Validator", "redditbot", "Applebot", "WhatsApp", "flipboard", "tumblr", "bitlybot"].map(function (ua) {
+var botsOnlyList = ["googlebot", "yahoo", "bingbot", "baiduspider", "facebookexternalhit", "twitterbot", "rogerbot", "linkedinbot", "embedly", "quora link preview", "showyoubot", "outbrain", "pinterest/0.", "pinterestbot", "developers.google.com/+/web/snippet", "slackbot", "vkShare", "W3C_Validator", "redditbot", "Applebot", "WhatsApp", "flipboard", "tumblr", "bitlybot", "Bitrix link preview", "XING-contenttabreceiver", "Discordbot", "TelegramBot", "Google Search Console"].map(function (ua) {
   return ua.toLowerCase();
 });
 
@@ -116,16 +116,14 @@ function compression(req, res, data) {
 
 var handleSkip = function handleSkip(msg, next) {
   debug(msg);
-  console.error("prerendercloud middleware SKIPPED:", msg);
+  if (process.env.NODE_ENV !== "test") console.error("prerendercloud middleware SKIPPED:", msg);
   return next();
 };
 
 var concurrentRequestCache = {};
 
 // response: { body, statusCode, headers }
-function createResponse(requestedUrl, response) {
-  var body = response.body;
-
+function createResponse(req, requestedUrl, response) {
   var lowerCasedHeaders = objectKeysToLowerCase(response.headers);
 
   var headers = {};
@@ -133,7 +131,33 @@ function createResponse(requestedUrl, response) {
     if (lowerCasedHeaders[h]) headers[h] = lowerCasedHeaders[h];
   });
 
+  var body = response.body;
+  var screenshot = void 0;
+  var meta = void 0;
+  var links = void 0;
+  if (options.options.withScreenshot && options.options.withScreenshot(req) || options.options.withMetadata && options.options.withMetadata(req)) {
+    headers["content-type"] = "text/html";
+    var json = void 0;
+    try {
+      json = JSON.parse(body);
+    } catch (err) {
+      if (err.name && err.name.match(/SyntaxError/)) {
+        console.error("withScreenshot expects JSON from server but parsing this failed:", body && body.toString().slice(0, 140) + "...");
+      }
+
+      throw err;
+    }
+    screenshot = json.screenshot && Buffer.from(json.screenshot, "base64");
+    body = json.body && Buffer.from(json.body, "base64").toString();
+    meta = json.meta && JSON.parse(Buffer.from(json.meta, "base64"));
+    links = json.links && JSON.parse(Buffer.from(json.links, "base64"));
+  }
+
   var data = { statusCode: response.statusCode, headers: headers, body: body };
+
+  if (screenshot) data.screenshot = screenshot;
+  if (meta) data.meta = meta;
+  if (links) data.links = links;
 
   if (options.options.enableMiddlewareCache && ("" + response.statusCode).startsWith("2") && body && body.length) middlewareCacheSingleton.instance.set(requestedUrl, data);
 
@@ -200,24 +224,30 @@ var Prerender = function () {
       }
 
       return requestPromise.then(function (response) {
-        return createResponse(_this2.url.requestedUrl, response);
+        return createResponse(_this2.req, _this2.url.requestedUrl, response);
       }).catch(function (err) {
         var shouldBubble = util.isFunction(options.options.bubbleUp5xxErrors) ? options.options.bubbleUp5xxErrors(err, _this2.req, err.response) : options.options.bubbleUp5xxErrors;
 
-        options.recordFail(_this2.url.requestedUrl);
+        var statusCode = err.response && parseInt(err.response.statusCode);
 
-        if (shouldBubble) {
-          if (err.response && is5xxError(err.response.statusCode)) return createResponse(_this2.url.requestedUrl, err.response);
+        var nonErrorStatusCode = statusCode === 404 || statusCode === 301 || statusCode === 302;
+
+        if (!nonErrorStatusCode) {
+          options.recordFail(_this2.url.requestedUrl);
+        }
+
+        if (shouldBubble && !nonErrorStatusCode) {
+          if (err.response && is5xxError(err.response.statusCode)) return createResponse(_this2.req, _this2.url.requestedUrl, err.response);
 
           if (err.message && err.message.match(/throttle/)) {
-            return createResponse(_this2.url.requestedUrl, {
+            return createResponse(_this2.req, _this2.url.requestedUrl, {
               body: "Error: prerender.cloud client throttled this prerender request due to a recent timeout",
               statusCode: 503,
               headers: { "content-type": "text/html" }
             });
           }
 
-          if (isGotClientTimeout(err)) return createResponse(_this2.url.requestedUrl, {
+          if (isGotClientTimeout(err)) return createResponse(_this2.req, _this2.url.requestedUrl, {
             body: "Error: prerender.cloud client timeout (as opposed to prerender.cloud server timeout)",
             statusCode: 500,
             headers: { "content-type": "text/html" }
@@ -225,18 +255,40 @@ var Prerender = function () {
 
           return Promise.reject(err);
         } else if (err.response && is4xxError(err.response.statusCode)) {
-          return createResponse(_this2.url.requestedUrl, err.response);
+          return createResponse(_this2.req, _this2.url.requestedUrl, err.response);
         }
 
         return Promise.reject(err);
       });
     }
+  }, {
+    key: "writeHttpResponse",
+    value: function writeHttpResponse(req, res, next, data) {
+      var _this3 = this;
+
+      var _writeHttpResponse = function _writeHttpResponse() {
+        return _this3._writeHttpResponse(req, res, next, data);
+      };
+
+      if (options.options.afterRenderBlocking) {
+        // preserve original body from origin prerender.cloud so mutations
+        // from afterRenderBlocking don't affect concurrentRequestCache
+        if (!data.origBodyBeforeAfterRenderBlocking) {
+          data.origBodyBeforeAfterRenderBlocking = data.body;
+        } else {
+          data.body = data.origBodyBeforeAfterRenderBlocking;
+        }
+        return options.options.afterRenderBlocking(null, req, data, _writeHttpResponse);
+      }
+
+      _writeHttpResponse();
+    }
 
     // data looks like { statusCode, headers, body }
 
   }, {
-    key: "writeHttpResponse",
-    value: function writeHttpResponse(req, res, next, data) {
+    key: "_writeHttpResponse",
+    value: function _writeHttpResponse(req, res, next, data) {
       if (options.options.afterRender) process.nextTick(function () {
         return options.options.afterRender(null, req, data);
       });
@@ -269,6 +321,8 @@ var Prerender = function () {
 
       if (this._isPrerenderCloudUserAgent()) return false;
 
+      if (this._isBlacklistedPath()) return false;
+
       if (options.options.shouldPrerender) {
         return options.options.shouldPrerender(this.req);
       } else {
@@ -278,7 +332,7 @@ var Prerender = function () {
   }, {
     key: "_createHeaders",
     value: function _createHeaders() {
-      var _this3 = this;
+      var _this4 = this;
 
       var h = {
         "User-Agent": "prerender-cloud-nodejs-middleware",
@@ -297,16 +351,44 @@ var Prerender = function () {
 
       if (options.options.removeTrailingSlash) Object.assign(h, { "Prerender-Remove-Trailing-Slash": true });
 
+      if (options.options.metaOnly && options.options.metaOnly(this.req)) Object.assign(h, { "Prerender-Meta-Only": true });
+
+      if (options.options.followRedirects && options.options.followRedirects(this.req)) Object.assign(h, { "Prerender-Follow-Redirects": true });
+
+      if (options.options.serverCacheDurationSeconds) {
+        var duration = options.options.serverCacheDurationSeconds(this.req);
+        if (duration != null) {
+          Object.assign(h, { "Prerender-Cache-Duration": duration });
+        }
+      }
+
+      if (options.options.deviceWidth) {
+        var deviceWidth = options.options.deviceWidth(this.req);
+        if (deviceWidth != null && typeof deviceWidth === "number") {
+          Object.assign(h, { "Prerender-Device-Width": deviceWidth });
+        }
+      }
+
+      if (options.options.deviceHeight) {
+        var deviceHeight = options.options.deviceHeight(this.req);
+        if (deviceHeight != null && typeof deviceHeight === "number") {
+          Object.assign(h, { "Prerender-Device-Height": deviceHeight });
+        }
+      }
+
       if (options.options.waitExtraLong) Object.assign(h, { "Prerender-Wait-Extra-Long": true });
 
-      // disable prerender.cloud caching
       if (options.options.disableServerCache) Object.assign(h, { noCache: true });
       if (options.options.disableAjaxBypass) Object.assign(h, { "Prerender-Disable-Ajax-Bypass": true });
       if (options.options.disableAjaxPreload) Object.assign(h, { "Prerender-Disable-Ajax-Preload": true });
 
+      if (options.options.withScreenshot && options.options.withScreenshot(this.req)) Object.assign(h, { "Prerender-With-Screenshot": true });
+
+      if (options.options.withMetadata && options.options.withMetadata(this.req)) Object.assign(h, { "Prerender-With-Metadata": true });
+
       if (this._hasOriginHeaderWhitelist()) {
         options.options.originHeaderWhitelist.forEach(function (_h) {
-          if (_this3.req.headers[_h]) Object.assign(h, _defineProperty({}, _h, _this3.req.headers[_h]));
+          if (_this4.req.headers[_h]) Object.assign(h, _defineProperty({}, _h, _this4.req.headers[_h]));
         });
 
         Object.assign(h, {
@@ -346,6 +428,32 @@ var Prerender = function () {
       reqUserAgent = reqUserAgent.toLowerCase();
 
       return reqUserAgent.match(/prerendercloud/i);
+    }
+  }, {
+    key: "_isBlacklistedPath",
+    value: function _isBlacklistedPath() {
+      var _this5 = this;
+
+      if (options.options.blacklistPaths) {
+        var paths = options.options.blacklistPaths(this.req);
+
+        if (paths && Array.isArray(paths)) {
+          return paths.some(function (path) {
+            if (path === _this5.req.url) return true;
+
+            if (path.endsWith("*")) {
+              var starIndex = path.indexOf("*");
+              var pathSlice = path.slice(0, starIndex);
+
+              if (_this5.req.url.startsWith(pathSlice)) return true;
+            }
+
+            return false;
+          });
+        }
+      }
+
+      return false;
     }
   }, {
     key: "_prerenderableUserAgent",
@@ -397,6 +505,7 @@ var Prerender = function () {
         return prerender.get().then(function (data) {
           return prerender.writeHttpResponse(req, res, next, data);
         }).catch(function (error) {
+          if (process.env.NODE_ENV !== "test") console.error(error);
           return handleSkip("server error: " + (error && error.message), next);
         });
       };
@@ -414,13 +523,17 @@ var Prerender = function () {
               body: stringOrObject
             });
           } else if (typeof stringOrObject === "object") {
-            return prerender.writeHttpResponse(req, res, next, {
+            return prerender.writeHttpResponse(req, res, next, Object.assign({
               statusCode: stringOrObject.status,
               headers: Object.assign({
                 "content-type": "text/html; charset=utf-8"
               }, stringOrObject.headers),
               body: stringOrObject.body
-            });
+            }, {
+              screenshot: stringOrObject.screenshot,
+              meta: stringOrObject.meta,
+              links: stringOrObject.links
+            }));
           }
         };
         return options.options.beforeRender(req, donePassedToUserBeforeRender);
@@ -441,12 +554,48 @@ Object.defineProperty(Prerender.middleware, "cache", {
   }
 });
 
-var screenshotAndPdf = function screenshotAndPdf(action, url, params) {
+var screenshotAndPdf = function screenshotAndPdf(action, url) {
+  var params = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : {};
+
   var headers = {};
 
   var token = options.options.prerenderToken || process.env.PRERENDER_TOKEN;
 
   if (token) Object.assign(headers, { "X-Prerender-Token": token });
+
+  if (params.viewportQuerySelector) {
+    Object.assign(headers, {
+      "Prerender-Viewport-Query-Selector": params.viewportQuerySelector
+    });
+
+    if (params.viewportQuerySelectorPadding) {
+      Object.assign(headers, {
+        "Prerender-Viewport-Query-Selector-Padding": params.viewportQuerySelectorPadding
+      });
+    }
+  }
+
+  if (params.deviceWidth) Object.assign(headers, { "Prerender-Device-Width": params.deviceWidth });
+
+  if (params.deviceHeight) Object.assign(headers, { "Prerender-Device-Height": params.deviceHeight });
+
+  if (params.viewportWidth) Object.assign(headers, {
+    "Prerender-Viewport-Width": params.viewportWidth
+  });
+
+  if (params.viewportHeight) Object.assign(headers, {
+    "Prerender-Viewport-Height": params.viewportHeight
+  });
+
+  if (params.viewportX) Object.assign(headers, { "Prerender-Viewport-X": params.viewportX });
+
+  if (params.viewportY) Object.assign(headers, { "Prerender-Viewport-Y": params.viewportY });
+
+  if ((params.viewportX || params.viewportY) && !(params.viewportWidth && params.viewportHeight)) {
+    return Promise.reject(new Error("can't set viewportX or viewportY without viewportWidth and viewportHeight"));
+  }
+
+  if (params.noPageBreaks) Object.assign(headers, { "Prerender-Pdf-No-Page-Breaks": "true" });
 
   return got(getRenderUrl(action, url), {
     encoding: null,

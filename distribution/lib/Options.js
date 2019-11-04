@@ -127,9 +127,9 @@ module.exports = function () {
         });
 
         configureMiddlewareCache(this.middlewareCacheSingleton, lruCache);
-      } else if (name === "whitelistQueryParams") {
+      } else if (name === "whitelistQueryParams" || name === "withScreenshot" || name === "afterRenderBlocking" || name === "blacklistPaths" || name === "metaOnly" || name === "withMetadata") {
         if (val != null && !util.isFunction(val)) {
-          throw new Error("whitelistQueryParams must be a function");
+          throw new Error(name + " must be a function");
         }
       }
 
@@ -140,7 +140,7 @@ module.exports = function () {
   }], [{
     key: "validOptions",
     get: function get() {
-      return ["timeout", "prerenderServiceUrl", "prerenderToken", "beforeRender", "afterRender", "whitelistUserAgents", "originHeaderWhitelist", "botsOnly", "disableServerCache", "disableAjaxBypass", "disableAjaxPreload", "bubbleUp5xxErrors", "enableMiddlewareCache", "middlewareCacheMaxBytes", "middlewareCacheMaxAge", "whitelistQueryParams", "shouldPrerender", "removeScriptTags", "removeTrailingSlash", "protocol", "retries", "host", "waitExtraLong", "throttleOnFail"];
+      return ["timeout", "prerenderServiceUrl", "prerenderToken", "beforeRender", "afterRender", "whitelistUserAgents", "originHeaderWhitelist", "botsOnly", "disableServerCache", "disableAjaxBypass", "disableAjaxPreload", "bubbleUp5xxErrors", "enableMiddlewareCache", "middlewareCacheMaxBytes", "middlewareCacheMaxAge", "whitelistQueryParams", "shouldPrerender", "removeScriptTags", "removeTrailingSlash", "protocol", "retries", "host", "waitExtraLong", "throttleOnFail", "withScreenshot", "afterRenderBlocking", "blacklistPaths", "metaOnly", "withMetadata", "followRedirects", "serverCacheDurationSeconds", "deviceWidth", "deviceHeight"];
     }
   }]);
 
