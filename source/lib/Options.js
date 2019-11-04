@@ -105,7 +105,16 @@ module.exports = class Options {
       "retries",
       "host",
       "waitExtraLong",
-      "throttleOnFail"
+      "throttleOnFail",
+      "withScreenshot",
+      "afterRenderBlocking",
+      "blacklistPaths",
+      "metaOnly",
+      "withMetadata",
+      "followRedirects",
+      "serverCacheDurationSeconds",
+      "deviceWidth",
+      "deviceHeight"
     ];
   }
 
@@ -128,9 +137,16 @@ module.exports = class Options {
       });
 
       configureMiddlewareCache(this.middlewareCacheSingleton, lruCache);
-    } else if (name === "whitelistQueryParams") {
+    } else if (
+      name === "whitelistQueryParams" ||
+      name === "withScreenshot" ||
+      name === "afterRenderBlocking" ||
+      name === "blacklistPaths" ||
+      name === "metaOnly" ||
+      name === "withMetadata"
+    ) {
       if (val != null && !util.isFunction(val)) {
-        throw new Error("whitelistQueryParams must be a function");
+        throw new Error(`${name} must be a function`);
       }
     }
 

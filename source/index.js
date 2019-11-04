@@ -71,7 +71,12 @@ const botsOnlyList = [
   "WhatsApp",
   "flipboard",
   "tumblr",
-  "bitlybot"
+  "bitlybot",
+  "Bitrix link preview",
+  "XING-contenttabreceiver",
+  "Discordbot",
+  "TelegramBot",
+  "Google Search Console"
 ].map(ua => ua.toLowerCase());
 
 const userAgentIsBot = (headers, requestedPath = "") => {
@@ -142,16 +147,15 @@ function compression(req, res, data) {
 
 const handleSkip = (msg, next) => {
   debug(msg);
-  console.error("prerendercloud middleware SKIPPED:", msg);
+  if (process.env.NODE_ENV !== "test")
+    console.error("prerendercloud middleware SKIPPED:", msg);
   return next();
 };
 
 const concurrentRequestCache = {};
 
 // response: { body, statusCode, headers }
-function createResponse(requestedUrl, response) {
-  const body = response.body;
-
+function createResponse(req, requestedUrl, response) {
   const lowerCasedHeaders = objectKeysToLowerCase(response.headers);
 
   const headers = {};
@@ -159,7 +163,39 @@ function createResponse(requestedUrl, response) {
     if (lowerCasedHeaders[h]) headers[h] = lowerCasedHeaders[h];
   });
 
+  let body = response.body;
+  let screenshot;
+  let meta;
+  let links;
+  if (
+    (options.options.withScreenshot && options.options.withScreenshot(req)) ||
+    (options.options.withMetadata && options.options.withMetadata(req))
+  ) {
+    headers["content-type"] = "text/html";
+    let json;
+    try {
+      json = JSON.parse(body);
+    } catch (err) {
+      if (err.name && err.name.match(/SyntaxError/)) {
+        console.error(
+          "withScreenshot expects JSON from server but parsing this failed:",
+          body && body.toString().slice(0, 140) + "..."
+        );
+      }
+
+      throw err;
+    }
+    screenshot = json.screenshot && Buffer.from(json.screenshot, "base64");
+    body = json.body && Buffer.from(json.body, "base64").toString();
+    meta = json.meta && JSON.parse(Buffer.from(json.meta, "base64"));
+    links = json.links && JSON.parse(Buffer.from(json.links, "base64"));
+  }
+
   const data = { statusCode: response.statusCode, headers, body };
+
+  if (screenshot) data.screenshot = screenshot;
+  if (meta) data.meta = meta;
+  if (links) data.links = links;
 
   if (
     options.options.enableMiddlewareCache &&
@@ -223,21 +259,32 @@ class Prerender {
 
     return requestPromise
       .then(response => {
-        return createResponse(this.url.requestedUrl, response);
+        return createResponse(this.req, this.url.requestedUrl, response);
       })
       .catch(err => {
         const shouldBubble = util.isFunction(options.options.bubbleUp5xxErrors)
           ? options.options.bubbleUp5xxErrors(err, this.req, err.response)
           : options.options.bubbleUp5xxErrors;
 
-        options.recordFail(this.url.requestedUrl);
+        const statusCode = err.response && parseInt(err.response.statusCode);
 
-        if (shouldBubble) {
+        const nonErrorStatusCode =
+          statusCode === 404 || statusCode === 301 || statusCode === 302;
+
+        if (!nonErrorStatusCode) {
+          options.recordFail(this.url.requestedUrl);
+        }
+
+        if (shouldBubble && !nonErrorStatusCode) {
           if (err.response && is5xxError(err.response.statusCode))
-            return createResponse(this.url.requestedUrl, err.response);
+            return createResponse(
+              this.req,
+              this.url.requestedUrl,
+              err.response
+            );
 
           if (err.message && err.message.match(/throttle/)) {
-            return createResponse(this.url.requestedUrl, {
+            return createResponse(this.req, this.url.requestedUrl, {
               body:
                 "Error: prerender.cloud client throttled this prerender request due to a recent timeout",
               statusCode: 503,
@@ -246,7 +293,7 @@ class Prerender {
           }
 
           if (isGotClientTimeout(err))
-            return createResponse(this.url.requestedUrl, {
+            return createResponse(this.req, this.url.requestedUrl, {
               body:
                 "Error: prerender.cloud client timeout (as opposed to prerender.cloud server timeout)",
               statusCode: 500,
@@ -255,15 +302,38 @@ class Prerender {
 
           return Promise.reject(err);
         } else if (err.response && is4xxError(err.response.statusCode)) {
-          return createResponse(this.url.requestedUrl, err.response);
+          return createResponse(this.req, this.url.requestedUrl, err.response);
         }
 
         return Promise.reject(err);
       });
   }
 
-  // data looks like { statusCode, headers, body }
   writeHttpResponse(req, res, next, data) {
+    const _writeHttpResponse = () =>
+      this._writeHttpResponse(req, res, next, data);
+
+    if (options.options.afterRenderBlocking) {
+      // preserve original body from origin prerender.cloud so mutations
+      // from afterRenderBlocking don't affect concurrentRequestCache
+      if (!data.origBodyBeforeAfterRenderBlocking) {
+        data.origBodyBeforeAfterRenderBlocking = data.body;
+      } else {
+        data.body = data.origBodyBeforeAfterRenderBlocking;
+      }
+      return options.options.afterRenderBlocking(
+        null,
+        req,
+        data,
+        _writeHttpResponse
+      );
+    }
+
+    _writeHttpResponse();
+  }
+
+  // data looks like { statusCode, headers, body }
+  _writeHttpResponse(req, res, next, data) {
     if (options.options.afterRender)
       process.nextTick(() => options.options.afterRender(null, req, data));
 
@@ -271,7 +341,9 @@ class Prerender {
       if (data.statusCode === 400) {
         res.statusCode = 400;
         return res.end(
-          `service.prerender.cloud can't prerender this page due to user error: ${data.body}`
+          `service.prerender.cloud can't prerender this page due to user error: ${
+            data.body
+          }`
         );
       } else if (data.statusCode === 429) {
         return handleSkip("rate limited due to free tier", next);
@@ -335,6 +407,7 @@ class Prerender {
           return prerender.writeHttpResponse(req, res, next, data);
         })
         .catch(function(error) {
+          if (process.env.NODE_ENV !== "test") console.error(error);
           return handleSkip(`server error: ${error && error.message}`, next);
         });
     };
@@ -352,16 +425,28 @@ class Prerender {
             body: stringOrObject
           });
         } else if (typeof stringOrObject === "object") {
-          return prerender.writeHttpResponse(req, res, next, {
-            statusCode: stringOrObject.status,
-            headers: Object.assign(
+          return prerender.writeHttpResponse(
+            req,
+            res,
+            next,
+            Object.assign(
               {
-                "content-type": "text/html; charset=utf-8"
+                statusCode: stringOrObject.status,
+                headers: Object.assign(
+                  {
+                    "content-type": "text/html; charset=utf-8"
+                  },
+                  stringOrObject.headers
+                ),
+                body: stringOrObject.body
               },
-              stringOrObject.headers
-            ),
-            body: stringOrObject.body
-          });
+              {
+                screenshot: stringOrObject.screenshot,
+                meta: stringOrObject.meta,
+                links: stringOrObject.links
+              }
+            )
+          );
         }
       };
       return options.options.beforeRender(req, donePassedToUserBeforeRender);
@@ -380,6 +465,8 @@ class Prerender {
     if (!this._prerenderableExtension()) return false;
 
     if (this._isPrerenderCloudUserAgent()) return false;
+
+    if (this._isBlacklistedPath()) return false;
 
     if (options.options.shouldPrerender) {
       return options.options.shouldPrerender(this.req);
@@ -409,15 +496,53 @@ class Prerender {
     if (options.options.removeTrailingSlash)
       Object.assign(h, { "Prerender-Remove-Trailing-Slash": true });
 
+    if (options.options.metaOnly && options.options.metaOnly(this.req))
+      Object.assign(h, { "Prerender-Meta-Only": true });
+
+    if (
+      options.options.followRedirects &&
+      options.options.followRedirects(this.req)
+    )
+      Object.assign(h, { "Prerender-Follow-Redirects": true });
+
+    if (options.options.serverCacheDurationSeconds) {
+      const duration = options.options.serverCacheDurationSeconds(this.req);
+      if (duration != null) {
+        Object.assign(h, { "Prerender-Cache-Duration": duration });
+      }
+    }
+
+    if (options.options.deviceWidth) {
+      const deviceWidth = options.options.deviceWidth(this.req);
+      if (deviceWidth != null && typeof deviceWidth === "number") {
+        Object.assign(h, { "Prerender-Device-Width": deviceWidth });
+      }
+    }
+
+    if (options.options.deviceHeight) {
+      const deviceHeight = options.options.deviceHeight(this.req);
+      if (deviceHeight != null && typeof deviceHeight === "number") {
+        Object.assign(h, { "Prerender-Device-Height": deviceHeight });
+      }
+    }
+
     if (options.options.waitExtraLong)
       Object.assign(h, { "Prerender-Wait-Extra-Long": true });
 
-    // disable prerender.cloud caching
     if (options.options.disableServerCache) Object.assign(h, { noCache: true });
     if (options.options.disableAjaxBypass)
       Object.assign(h, { "Prerender-Disable-Ajax-Bypass": true });
     if (options.options.disableAjaxPreload)
       Object.assign(h, { "Prerender-Disable-Ajax-Preload": true });
+
+    if (
+      options.options.withScreenshot &&
+      options.options.withScreenshot(this.req)
+    )
+      Object.assign(h, { "Prerender-With-Screenshot": true });
+
+    if (options.options.withMetadata && options.options.withMetadata(this.req))
+      Object.assign(h, { "Prerender-With-Metadata": true });
 
     if (this._hasOriginHeaderWhitelist()) {
       options.options.originHeaderWhitelist.forEach(_h => {
@@ -464,6 +589,29 @@ class Prerender {
     return reqUserAgent.match(/prerendercloud/i);
   }
 
+  _isBlacklistedPath() {
+    if (options.options.blacklistPaths) {
+      const paths = options.options.blacklistPaths(this.req);
+
+      if (paths && Array.isArray(paths)) {
+        return paths.some(path => {
+          if (path === this.req.url) return true;
+
+          if (path.endsWith("*")) {
+            const starIndex = path.indexOf("*");
+            const pathSlice = path.slice(0, starIndex);
+
+            if (this.req.url.startsWith(pathSlice)) return true;
+          }
+
+          return false;
+        });
+      }
+    }
+
+    return false;
+  }
+
   _prerenderableUserAgent() {
     const reqUserAgent = this.req.headers["user-agent"];
 
@@ -489,12 +637,61 @@ Object.defineProperty(Prerender.middleware, "cache", {
   }
 });
 
-const screenshotAndPdf = (action, url, params) => {
+const screenshotAndPdf = (action, url, params = {}) => {
   const headers = {};
 
   const token = options.options.prerenderToken || process.env.PRERENDER_TOKEN;
 
   if (token) Object.assign(headers, { "X-Prerender-Token": token });
+
+  if (params.viewportQuerySelector) {
+    Object.assign(headers, {
+      "Prerender-Viewport-Query-Selector": params.viewportQuerySelector
+    });
+
+    if (params.viewportQuerySelectorPadding) {
+      Object.assign(headers, {
+        "Prerender-Viewport-Query-Selector-Padding":
+          params.viewportQuerySelectorPadding
+      });
+    }
+  }
+
+  if (params.deviceWidth)
+    Object.assign(headers, { "Prerender-Device-Width": params.deviceWidth });
+
+  if (params.deviceHeight)
+    Object.assign(headers, { "Prerender-Device-Height": params.deviceHeight });
+
+  if (params.viewportWidth)
+    Object.assign(headers, {
+      "Prerender-Viewport-Width": params.viewportWidth
+    });
+
+  if (params.viewportHeight)
+    Object.assign(headers, {
+      "Prerender-Viewport-Height": params.viewportHeight
+    });
+
+  if (params.viewportX)
+    Object.assign(headers, { "Prerender-Viewport-X": params.viewportX });
+
+  if (params.viewportY)
+    Object.assign(headers, { "Prerender-Viewport-Y": params.viewportY });
+
+  if (
+    (params.viewportX || params.viewportY) &&
+    !(params.viewportWidth && params.viewportHeight)
+  ) {
+    return Promise.reject(
+      new Error(
+        "can't set viewportX or viewportY without viewportWidth and viewportHeight"
+      )
+    );
+  }
+
+  if (params.noPageBreaks)
+    Object.assign(headers, { "Prerender-Pdf-No-Page-Breaks": "true" });
 
   return got(getRenderUrl(action, url), {
     encoding: null,

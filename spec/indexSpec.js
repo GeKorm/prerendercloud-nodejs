@@ -193,20 +193,33 @@ describe("prerender middleware", function() {
       });
 
       describe("when server returns 404", function() {
-        beforeEach(function(done) {
-          this.prerenderServer = nock("https://service.prerender.cloud")
-            .get(/.*/)
-            .reply(() => [404, "notfound"]);
-          this.callPrerenderMiddleware(done);
-        });
+        function itWorks() {
+          it("preserves 404 status-code", function() {
+            expect(this.res.writeHead.calls.mostRecent().args).toEqual([404, {}]);
+          });
 
-        it("preserves 404 status-code", function() {
-          expect(this.res.writeHead.calls.mostRecent().args).toEqual([404, {}]);
-        });
-
-        it("returns pre-rendered body", function() {
-          expect(this.res.end.calls.mostRecent().args[0]).toEqual("notfound");
-        });
+          it("returns pre-rendered body", function() {
+            expect(this.res.end.calls.mostRecent().args[0]).toEqual("notfound");
+          });
+        }
+        describe('with bubbleUp5xxErrors', function() {
+          beforeEach(function(done) {
+            this.prerenderServer = nock("https://service.prerender.cloud")
+              .get(/.*/)
+              .reply(() => [404, "notfound"]);
+            this.callPrerenderMiddleware(done,Object.assign({ bubbleUp5xxErrors: true }));
+          });
+          itWorks()
+        })
+        describe('without bubbleUp5xxErrors', function() {
+          beforeEach(function(done) {
+            this.prerenderServer = nock("https://service.prerender.cloud")
+              .get(/.*/)
+              .reply(() => [404, "notfound"]);
+            this.callPrerenderMiddleware(done);
+          });
+          itWorks()
+        })
       });
 
       describe("when server returns 301", function() {
@@ -389,6 +402,141 @@ describe("prerender middleware", function() {
         });
       });
 
+      describe("withMetadata option", function() {
+        beforeEach(function() {
+          const that = this;
+          this.prerenderServer = nock("https://service.prerender.cloud")
+            .get(/.*/)
+            .reply(function(uri) {
+              that.headersSentToPrerenderCloud = this.req.headers;
+
+              if (this.req.headers["prerender-with-metadata"]) {
+                return [
+                  200,
+                  {
+                    body: Buffer.from("base64-body").toString("base64"),
+                    links: Buffer.from(JSON.stringify(["/path1"])).toString(
+                      "base64"
+                    )
+                  }
+                ];
+              } else {
+                return [200, "body"];
+              }
+            });
+        });
+        describe("disabled", function() {
+          beforeEach(function(done) {
+            this.callPrerenderMiddleware(done, {
+              withMetadata: req => {
+                this.reqDataPassedToWithMetadata = req;
+                return false;
+              }
+            });
+          });
+
+          it("it sets req obj", function() {
+            expect(this.reqDataPassedToWithMetadata).toEqual({
+              headers: { "user-agent": "twitterbot/1.0", host: "example.org" },
+              _requestedUrl: "http://example.org/files.m4v.storage/lol-valid",
+              url: "/files.m4v.storage/lol-valid",
+              originalUrl: "/files.m4v.storage/lol-valid",
+              method: "GET",
+              prerender: {
+                url: { requestedPath: "/files.m4v.storage/lol-valid" }
+              }
+            });
+          });
+          it("does not send header to prerendercloud", function() {
+            expect(
+              this.headersSentToPrerenderCloud["prerender-with-metadata"]
+            ).toEqual(undefined);
+          });
+        });
+        describe("enabled", function() {
+          beforeEach(function(done) {
+            this.callPrerenderMiddleware(done, { withMetadata: () => true });
+          });
+
+          it("returns pre-rendered body", function() {
+            expect(this.res.end.calls.mostRecent().args[0]).toEqual(
+              "base64-body"
+            );
+          });
+
+          it("it sends header to prerendercloud", function() {
+            expect(
+              this.headersSentToPrerenderCloud["prerender-with-metadata"]
+            ).toEqual(true);
+          });
+        });
+      });
+
+      describe("withScreenshot option", function() {
+        beforeEach(function() {
+          const that = this;
+          this.prerenderServer = nock("https://service.prerender.cloud")
+            .get(/.*/)
+            .reply(function(uri) {
+              that.headersSentToPrerenderCloud = this.req.headers;
+
+              if (this.req.headers["prerender-with-screenshot"]) {
+                return [
+                  200,
+                  { body: Buffer.from("base64-body").toString("base64") }
+                ];
+              } else {
+                return [200, "body"];
+              }
+            });
+        });
+        describe("disabled", function() {
+          beforeEach(function(done) {
+            this.callPrerenderMiddleware(done, {
+              withScreenshot: req => {
+                this.reqDataPassedToWithScreenshot = req;
+                return false;
+              }
+            });
+          });
+
+          it("it sets req obj", function() {
+            expect(this.reqDataPassedToWithScreenshot).toEqual({
+              headers: { "user-agent": "twitterbot/1.0", host: "example.org" },
+              _requestedUrl: "http://example.org/files.m4v.storage/lol-valid",
+              url: "/files.m4v.storage/lol-valid",
+              originalUrl: "/files.m4v.storage/lol-valid",
+              method: "GET",
+              prerender: {
+                url: { requestedPath: "/files.m4v.storage/lol-valid" }
+              }
+            });
+          });
+          it("does not send header to prerendercloud", function() {
+            expect(
+              this.headersSentToPrerenderCloud["prerender-with-screenshot"]
+            ).toEqual(undefined);
+          });
+        });
+        describe("enabled", function() {
+          beforeEach(function(done) {
+            this.callPrerenderMiddleware(done, { withScreenshot: () => true });
+          });
+
+          it("returns pre-rendered body", function() {
+            expect(this.res.end.calls.mostRecent().args[0]).toEqual(
+              "base64-body"
+            );
+          });
+
+          it("it sends header to prerendercloud", function() {
+            expect(
+              this.headersSentToPrerenderCloud["prerender-with-screenshot"]
+            ).toEqual(true);
+          });
+        });
+      });
+
       describe("removeTrailingSlash option", function() {
         beforeEach(function() {
           const that = this;
@@ -456,6 +604,171 @@ describe("prerender middleware", function() {
           it("it sends header to prerendercloud", function() {
             expect(
               this.headersSentToPrerenderCloud["prerender-remove-script-tags"]
+            ).toEqual(true);
+          });
+        });
+      });
+
+      describe("followRedirects option", function() {
+        beforeEach(function() {
+          const that = this;
+          this.prerenderServer = nock("https://service.prerender.cloud")
+            .get(/.*/)
+            .reply(function(uri) {
+              that.headersSentToPrerenderCloud = this.req.headers;
+              return [200, "body"];
+            });
+        });
+        describe("disabled", function() {
+          beforeEach(function(done) {
+            const that = this;
+            this.callPrerenderMiddleware(done, {
+              metaOnly: req => {
+                that.reqObj = req;
+                return false;
+              }
+            });
+          });
+
+          it("passes headers to fn", function() {
+            expect(this.reqObj).toEqual({
+              headers: { "user-agent": "twitterbot/1.0", host: "example.org" },
+              _requestedUrl: "http://example.org/files.m4v.storage/lol-valid",
+              url: "/files.m4v.storage/lol-valid",
+              originalUrl: "/files.m4v.storage/lol-valid",
+              method: "GET",
+              prerender: {
+                url: { requestedPath: "/files.m4v.storage/lol-valid" }
+              }
+            });
+          });
+
+          it("does not send header to prerendercloud", function() {
+            expect(
+              this.headersSentToPrerenderCloud["prerender-follow-redirects"]
+            ).toEqual(undefined);
+          });
+        });
+        describe("enabled", function() {
+          beforeEach(function(done) {
+            this.callPrerenderMiddleware(done, { followRedirects: () => true });
+          });
+
+          it("it sends header to prerendercloud", function() {
+            console.log(
+              "headers",
+              this.headersSentToPrerenderCloud["prerender-follow-redirects"]
+            );
+            expect(
+              this.headersSentToPrerenderCloud["prerender-follow-redirects"]
+            ).toEqual(true);
+          });
+        });
+      });
+
+      describe("serverCacheDurationSeconds option", function() {
+        beforeEach(function() {
+          const that = this;
+          this.prerenderServer = nock("https://service.prerender.cloud")
+            .get(/.*/)
+            .reply(function(uri) {
+              that.headersSentToPrerenderCloud = this.req.headers;
+              return [200, "body"];
+            });
+        });
+        describe("disabled", function() {
+          beforeEach(function(done) {
+            const that = this;
+            this.callPrerenderMiddleware(done, {
+              metaOnly: req => {
+                that.reqObj = req;
+                return false;
+              }
+            });
+          });
+
+          it("passes headers to fn", function() {
+            expect(this.reqObj).toEqual({
+              headers: { "user-agent": "twitterbot/1.0", host: "example.org" },
+              _requestedUrl: "http://example.org/files.m4v.storage/lol-valid",
+              url: "/files.m4v.storage/lol-valid",
+              originalUrl: "/files.m4v.storage/lol-valid",
+              method: "GET",
+              prerender: {
+                url: { requestedPath: "/files.m4v.storage/lol-valid" }
+              }
+            });
+          });
+
+          it("does not send header to prerendercloud", function() {
+            expect(
+              this.headersSentToPrerenderCloud["prerender-cache-duration"]
+            ).toEqual(undefined);
+          });
+        });
+        describe("enabled", function() {
+          beforeEach(function(done) {
+            this.callPrerenderMiddleware(done, {
+              serverCacheDurationSeconds: () => "1234"
+            });
+          });
+
+          it("it sends header to prerendercloud", function() {
+            expect(
+              this.headersSentToPrerenderCloud["prerender-cache-duration"]
+            ).toEqual("1234");
+          });
+        });
+      });
+
+      describe("metaOnly option", function() {
+        beforeEach(function() {
+          const that = this;
+          this.prerenderServer = nock("https://service.prerender.cloud")
+            .get(/.*/)
+            .reply(function(uri) {
+              that.headersSentToPrerenderCloud = this.req.headers;
+              return [200, "body"];
+            });
+        });
+        describe("disabled", function() {
+          beforeEach(function(done) {
+            const that = this;
+            this.callPrerenderMiddleware(done, {
+              metaOnly: req => {
+                that.reqObj = req;
+                return false;
+              }
+            });
+          });
+
+          it("passes headers to fn", function() {
+            expect(this.reqObj).toEqual({
+              headers: { "user-agent": "twitterbot/1.0", host: "example.org" },
+              _requestedUrl: "http://example.org/files.m4v.storage/lol-valid",
+              url: "/files.m4v.storage/lol-valid",
+              originalUrl: "/files.m4v.storage/lol-valid",
+              method: "GET",
+              prerender: {
+                url: { requestedPath: "/files.m4v.storage/lol-valid" }
+              }
+            });
+          });
+
+          it("does not send header to prerendercloud", function() {
+            expect(
+              this.headersSentToPrerenderCloud["prerender-meta-only"]
+            ).toEqual(undefined);
+          });
+        });
+        describe("enabled", function() {
+          beforeEach(function(done) {
+            this.callPrerenderMiddleware(done, { metaOnly: () => true });
+          });
+
+          it("it sends header to prerendercloud", function() {
+            expect(
+              this.headersSentToPrerenderCloud["prerender-meta-only"]
             ).toEqual(true);
           });
         });
@@ -572,7 +885,8 @@ describe("prerender middleware", function() {
       describe("concurrent requests", function() {
         beforeEach(function(done) {
           this.requestCount = 0;
-          this.req._requestedUrl = `http://example.org/`;
+          this.req._requestedUrl = "http://example.org/";
+          this.req.req1 = true;
           this.prerenderServer = nock("https://service.prerender.cloud")
             .get(/.*/)
             .reply(uri => {
@@ -580,26 +894,47 @@ describe("prerender middleware", function() {
               this.requestCount += 1;
               return [200, "body", { "content-type": "text/plain" }];
             });
-          this.prerenderServer = nock("https://service.prerender.cloud")
-            .get(/.*/)
-            .reply(uri => {
-              this.requestCount += 1;
-              return [200, "body2", { "content-type": "text/html" }];
-            });
           var callCounter = 0;
           const _done = () => {
             callCounter += 1;
             if (callCounter === 2) done();
           };
-          this.callPrerenderMiddleware(_done, { enableMiddlewareCache: false });
-          this.callPrerenderMiddleware(_done, { enableMiddlewareCache: false });
+          // configure the middleware
+          this.configurePrerenderMiddleware(_done, {
+            enableMiddlewareCache: false,
+            afterRenderBlocking: (err, req, res, next) => {
+              if (req.req1) {
+                res.body = "req1";
+              }
+              next();
+            }
+          });
+
+          // make a new set of req/res objs
+          this.req2 = {
+            _requestedUrl: "http://example.org/",
+            headers: { "user-agent": "twitterbot/1.0" }
+          };
+          this.res2 = {
+            writeHead: jasmine.createSpy("writeHead"),
+            getHeader: jasmine.createSpy("getHeader"),
+            setHeader: jasmine.createSpy("setHeader")
+          };
+          this.res2.end = jasmine.createSpy("end2").and.callFake(_done);
+          configureUrlForReq(this.req2, {});
+
+          // call the _same_ middleware twice in a row, but with diff req/res
+          // (note, I don't understand why req2 must be called first in order
+          // to see the mutatation from req1... some event loop mystery)
+          this.prerenderMiddleware(this.req2, this.res2, () => {});
+          this.prerenderMiddleware(this.req, this.res, this.next);
         });
         it("only makes 1 request", function() {
           expect(this.requestCount).toBe(1);
         });
         it("returns body from first request", function() {
-          expect(this.res.end.calls.argsFor(0)).toEqual(["body"]);
-          expect(this.res.end.calls.argsFor(1)).toEqual(["body"]);
+          expect(this.res.end.calls.argsFor(0)).toEqual(["req1"]);
+          expect(this.res2.end.calls.argsFor(0)).toEqual(["body"]);
         });
       });
 
@@ -661,6 +996,122 @@ describe("prerender middleware", function() {
           });
           it("returns pre-rendered body", function() {
             expect(this.res.end).toHaveBeenCalledWith("body2");
+          });
+        });
+      });
+    });
+
+    describe("blacklistPaths option", function() {
+      beforeEach(function() {
+        this.req = {
+          headers: {
+            "user-agent": "chrome"
+          }
+        };
+        this.uri = undefined;
+        this.prerenderServer = nock("https://service.prerender.cloud")
+          .get(/.*/)
+          .reply(uri => {
+            this.uri = uri;
+            return [
+              200,
+              "body",
+              {
+                "content-type": "text/html; charset=utf-8"
+              }
+            ];
+          });
+      });
+
+      describe("when path is not in blacklist", function() {
+        beforeEach(function(done) {
+          this.req._requestedUrl = "https://example.org/should-prerender";
+          this.callPrerenderMiddleware(done, {
+            blacklistPaths: req => ["/dont-prerender"]
+          });
+        });
+
+        it("prerenders", function() {
+          expect(this.uri).toEqual("/http://example.org/should-prerender");
+        });
+      });
+
+      describe("when path is not array", function() {
+        beforeEach(function(done) {
+          this.req._requestedUrl = "https://example.org/dont-prerender";
+          this.callPrerenderMiddleware(done, {
+            blacklistPaths: req => "/dont-prerender"
+          });
+        });
+
+        it("prerenders", function() {
+          expect(this.uri).toEqual("/http://example.org/dont-prerender");
+        });
+      });
+
+      describe("when path is in blacklist", function() {
+        beforeEach(function(done) {
+          this.req._requestedUrl = "https://example.org/dont-prerender";
+          this.reqObj = undefined;
+          this.callPrerenderMiddleware(done, {
+            blacklistPaths: req => {
+              this.reqObj = req;
+              return ["/dont-prerender"];
+            }
+          });
+        });
+        it("passes req obj", function() {
+          expect(this.reqObj).toEqual({
+            headers: { "user-agent": "chrome", host: "example.org" },
+            _requestedUrl: "https://example.org/dont-prerender",
+            url: "/dont-prerender",
+            originalUrl: "/dont-prerender",
+            method: "GET",
+            prerender: { url: { requestedPath: "/dont-prerender" } }
+          });
+        });
+        it("does not prerender", function() {
+          expect(this.uri).toBeUndefined();
+        });
+        itCalledNext();
+      });
+
+      describe("with wildcard", function() {
+        beforeEach(function() {
+          this.reqObj = undefined;
+        });
+
+        function callPrerender() {
+          beforeEach(function(done) {
+            this.callPrerenderMiddleware(done, {
+              blacklistPaths: req => {
+                this.reqObj = req;
+                return ["/signup/*", "/dont*"];
+              }
+            });
+          });
+        }
+
+        describe("when path is in wildcard", function() {
+          beforeEach(function() {
+            this.req._requestedUrl =
+              "https://example.org/signup/dont-prerender";
+          });
+          callPrerender();
+
+          it("does not prerender", function() {
+            expect(this.uri).toBeUndefined();
+          });
+          itCalledNext();
+        });
+
+        describe("when path is not in wildcard", function() {
+          beforeEach(function() {
+            this.req._requestedUrl = "https://example.org/dons-prerender";
+          });
+          callPrerender();
+          it("prerenders", function() {
+            expect(this.uri).toEqual("/http://example.org/dons-prerender");
           });
         });
       });
@@ -794,12 +1245,16 @@ describe("prerender middleware", function() {
       describe("with object", function() {
         beforeEach(function(done) {
           this.callPrerenderMiddleware(done, {
+            afterRender: (err, req, res) => {
+              this.afterRenderResObj = res;
+            },
             beforeRender: (req, beforeRenderDone) => {
               this.uriCapturedInBeforeRender = req.url;
               beforeRenderDone(null, {
                 status: 202,
                 body: "body-from-before-render",
-                headers: { whatever: "works" }
+                headers: { whatever: "works" },
+                bogus: {}
               });
             }
           });
@@ -817,6 +1272,55 @@ describe("prerender middleware", function() {
         });
         it("returns beforeRender body", function() {
           expect(this.res.end).toHaveBeenCalledWith("body-from-before-render");
+        });
+        it("only includes status/headers/body in args to afterRender", function() {
+          expect(this.afterRenderResObj).toEqual({
+            statusCode: 202,
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              whatever: "works"
+            },
+            body: "body-from-before-render",
+            screenshot: undefined,
+            meta: undefined,
+            links: undefined
+          });
+        });
+      });
+
+      describe("with object that has screenshot and meta", function() {
+        beforeEach(function(done) {
+          this.callPrerenderMiddleware(done, {
+            afterRender: (err, req, res) => {
+              this.afterRenderResObj = res;
+            },
+            beforeRender: (req, beforeRenderDone) => {
+              this.uriCapturedInBeforeRender = req.url;
+              beforeRenderDone(null, {
+                status: 202,
+                body: "body-from-before-render",
+                headers: { whatever: "works" },
+                screenshot: Buffer.from([]),
+                meta: {},
+                links: [],
+                bogus: {}
+              });
+            }
+          });
+        });
+
+        it("includes screenshot/meta in args passed to afterRender", function() {
+          expect(this.afterRenderResObj).toEqual({
+            statusCode: 202,
+            headers: {
+              "content-type": "text/html; charset=utf-8",
+              whatever: "works"
+            },
+            body: "body-from-before-render",
+            screenshot: Buffer.from([]),
+            meta: {},
+            links: []
+          });
         });
       });
 
@@ -897,6 +1401,66 @@ describe("prerender middleware", function() {
               "content-type": "text/html; charset=utf-8"
             },
             body: "body"
+          }
+        });
+      });
+    });
+
+    describe("afterRenderBlocking option", function() {
+      beforeEach(function() {
+        this.req = {
+          headers: {
+            "user-agent": "Mozilla/5.0"
+          },
+          _requestedUrl: "http://example.org/file"
+        };
+        this.prerenderServer = nock("https://service.prerender.cloud")
+          .get(/.*/)
+          .reply(uri => {
+            this.uri = uri;
+            return [
+              200,
+              "body",
+              {
+                someHeader: "someHeaderValue",
+                "content-type": "text/html; charset=utf-8"
+              }
+            ];
+          });
+      });
+
+      beforeEach(function(done) {
+        this.callPrerenderMiddleware(() => {}, {
+          afterRenderBlocking: (err, req, res, next) => {
+            this.afterRender = { err, req, res };
+            res.body = "lol";
+            next();
+            done();
+          }
+        });
+      });
+
+      it("returns modified response", function() {
+        expect(this.afterRender).toEqual({
+          err: null,
+          req: {
+            prerender: { url: { requestedPath: "/file" } },
+            headers: {
+              "user-agent": "Mozilla/5.0",
+              host: "example.org"
+            },
+            _requestedUrl: "http://example.org/file",
+            url: "/file",
+            originalUrl: "/file",
+            method: "GET"
+          },
+          res: {
+            origBodyBeforeAfterRenderBlocking: "body",
+            statusCode: 200,
+            headers: {
+              "content-type": "text/html; charset=utf-8"
+            },
+            body: "lol"
           }
         });
       });
